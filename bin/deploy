@@ -1,0 +1,28 @@
+#!/bin/sh
+
+# Deploy `build` branch
+
+branch=$(git rev-parse --abbrev-ref HEAD)
+revision=$(git rev-parse --short HEAD)
+
+[ -d build ] || {
+  mkdir build
+}
+
+cd build
+
+[ -d .git ] || {
+  git init
+  git remote add origin git@github.com:alexherbo2/dofus-treasure-hunter-scrap
+  git checkout -b build
+}
+
+[ -d dofus-treasure-hunter ] && {
+  rm --recursive dofus-treasure-hunter
+}
+
+../bin/scrap
+
+git add .
+git commit --message="Build $branch/$revision"
+git push --force

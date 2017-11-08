@@ -1,0 +1,161 @@
+#!/usr/bin/env node
+
+const puppeteer = require('puppeteer')
+const fs = require('fs')
+const { exec } = require('child_process')
+
+const main = async () => {
+  // Create the necessary structure
+  await exec('mkdir --parent dofus-treasure-hunter/clues/{names,positions}')
+  const browser = await puppeteer.launch({ args: [
+    '--no-sandbox',
+    '--disable-sandbox',
+  ]})
+  const page = await browser.newPage()
+  // DOM
+  let html = {}
+  let js = {}
+  // Languages
+  // ‾‾‾‾‾‾‾‾‾
+  // Default: French
+  await page.goto('http://dofus-map.com/hunt')
+  // Extract language links from page
+  html.languages = await page.evaluate(async () =>
+    Promise.resolve(Array.from(document.querySelectorAll('#languages a')).map((link) => ({
+      textContent: link.textContent,
+      href: link.href,
+    })))
+  )
+  // Push French
+  html.languages.push({
+    textContent: 'Français',
+    href: 'http://dofus-map.com/fr/hunt',
+  })
+  js.languages = {}
+  for (let link of html.languages) {
+    const [match, language] = link.href.match(new RegExp('dofus-map.com/([a-z]+)/hunt'))
+    await page.goto(link.href)
+    // Extract text from page
+    // text = {
+    //   <identifier>: <text>,
+    //   […]
+    // }
+    const text = await page.evaluate(async () =>
+      Promise.resolve(window.text)
+    )
+    js.languages[language] = text
+  }
+  // Fixes spelling mistake
+  js.languages.fr[653] = 'Charrette de céréales'
+  // Clues
+  // ‾‾‾‾‾
+  await page.goto('https://dofusama.fr/treasurehunt/stats/tous-les-indices.html')
+  // Extract clue links from page
+  html.clues = await page.evaluate(async () =>
+    Promise.resolve(Array.from(document.querySelectorAll('table a')).map((link) => ({
+      textContent: link.textContent,
+      href: link.href,
+    })))
+  )
+  js.positions = {}
+  for (let link of html.clues) {
+    const [match, name, identifier] = link.href.match('details-(.+)-([0-9]+).html')
+    // Set description
+    const description = link.textContent
+    // By-pass protection
+    const headers = {
+      Referer: link.href
+    }
+    await page.setExtraHTTPHeaders(headers)
+    // The site has some protection against scraping
+    // Make the page accessible by assigning the referer – the page they expect user comes from.
+    await page.goto(`https://dofusama.fr/map/clue-fragment/${identifier}/4`)
+    // Extract positions from page
+    // positions = [
+    //   { x: <x>, y: <y> },
+    //   […]
+    // ]
+    html.positions = await page.evaluate(async () =>
+      Promise.resolve(window.positions)
+    )
+    const positions = html.positions.map((position) => Object.values(position))
+    js.positions[description] = positions
+  }
+  let positions = {}
+  let languages = {}
+  let languageCodes = Object.keys(js.languages)
+  for (let code of languageCodes) {
+    languages[code] = {}
+  }
+  for (let [description, definition] of Object.entries(js.positions)) {
+    const match = Object.entries(js.languages.fr).find(([identifier, name]) =>
+      description.toSymbol() == name.toSymbol()
+    )
+    if (! match) {
+      console.log(`Cannot match [${description}] clue name in French translation`)
+      continue
+    }
+    const languageIdentifier = match[0]
+    const identifier = js.languages.en[languageIdentifier].toSymbol()
+    for (let code of languageCodes) {
+      languages[code][identifier] = js.languages[code][languageIdentifier]
+    }
+    positions[identifier] = definition
+  }
+  // Output manipulations:
+  // – Sort
+  // – Pretty-print
+  for (let [identifier, definition] of Object.entries(positions)) {
+    const compare = (a, b) => {
+      const abscissaComparison = a[0] - b[0]
+      if (abscissaComparison < 1) {
+        return -1
+      }
+      if (abscissaComparison > 1) {
+        return 1
+      }
+      const ordinateComparison = a[1] - b[1]
+      if (ordinateComparison < 1) {
+        return -1
+      }
+      if (ordinateComparison > 1) {
+        return 1
+      }
+      else {
+        return 0
+      }
+    }
+    const output = definition.sort(compare)
+    await fs.writeFile(`dofus-treasure-hunter/clues/positions/${identifier}.json`, JSON.stringify(output, null, 2),
+      (error) =>
+        console.log(error)
+    )
+  }
+  for (let [language, definition] of Object.entries(languages)) {
+    const compare = (a, b) =>
+      a[0].localeCompare(b[0])
+    const output = Object.entries(definition).sort(compare).toObject()
+    await fs.writeFile(`dofus-treasure-hunter/clues/names/${language}.json`, JSON.stringify(output, null, 2),
+      (error) =>
+        console.log(error)
+    )
+  }
+  await browser.close()
+}
+
+Array.prototype.toObject = function() {
+  return this.reduce((object, tuple) => ({ ...object,
+    [tuple[0]]: tuple[1]
+  }), {})
+}
+
+String.prototype.toSymbol = function() {
+  return this
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/ /g, '-')
+    .replace(/['"]/g, '')
+    .toLowerCase()
+}
+
+main()
